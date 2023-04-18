@@ -21,6 +21,9 @@ pub use util::Hash;
 
 use bao_tree::BlockSize;
 
+#[cfg(test)]
+mod dag_cbor_parser;
+
 pub(crate) const IROH_BLOCK_SIZE: BlockSize = match BlockSize::new(4) {
     Some(bs) => bs,
     None => panic!(),
@@ -29,6 +32,7 @@ pub(crate) const IROH_BLOCK_SIZE: BlockSize = match BlockSize::new(4) {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::Cursor,
         net::{Ipv4Addr, SocketAddr},
         path::{Path, PathBuf},
         sync::Arc,
@@ -44,7 +48,10 @@ mod tests {
     use tokio::{fs, sync::broadcast};
     use tracing_subscriber::{prelude::*, EnvFilter};
 
-    use crate::provider::{create_collection, Event, Provider};
+    use super::dag_cbor_parser::references;
+    use crate::provider::{
+        create_collection, ArrayLinkIterator, CollectionParser, Event, Provider,
+    };
     use crate::tls::PeerId;
     use crate::util::Hash;
     use crate::{
@@ -640,6 +647,64 @@ mod tests {
         let provider = Provider::builder(db)
             .bind_addr("127.0.0.1:0".parse().unwrap())
             .custom_handler(custom_handler)
+            .spawn()
+            .unwrap();
+        let auth_token = provider.auth_token();
+        let addr = provider.local_address();
+        let peer_id = Some(provider.peer_id());
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            get::run(
+                Bytes::from(&b"hello"[..]).into(),
+                auth_token,
+                get::Options {
+                    addr,
+                    peer_id,
+                    keylog: true,
+                },
+                || async move { Ok(()) },
+                move |mut data| async move {
+                    if data.is_root() {
+                        let hash = data.root_hash();
+                        println!("{}", hash);
+                        let text = data.read_blob(hash).await?;
+                        println!("{}", text.len());
+                        println!("{}", std::str::from_utf8(&text).unwrap());
+                        data.set_limit(0);
+                    } else {
+                        panic!()
+                    }
+                    data.end()
+                },
+                (),
+            ),
+        )
+        .await
+        .expect("timeout")
+        .expect("get failed");
+    }
+
+    #[derive(Clone, Debug)]
+    struct DagCborCollectionParser;
+
+    impl CollectionParser for DagCborCollectionParser {
+        type LinkIterator = ArrayLinkIterator;
+
+        fn links(&self, format: u64, bytes: &[u8]) -> anyhow::Result<Self::LinkIterator> {
+            anyhow::ensure!(format == 0x71, "unsupported format: {}", format);
+            let mut links = Vec::new();
+            references(&mut Cursor::new(bytes), &mut links)?;
+            Ok(ArrayLinkIterator { links, offset: 0 })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_collection_parser() {
+        let db = Database::default();
+        let custom_parser = DagCborCollectionParser;
+        let provider = Provider::builder(db)
+            .bind_addr("127.0.0.1:0".parse().unwrap())
+            .collection_parser(custom_parser)
             .spawn()
             .unwrap();
         let auth_token = provider.auth_token();

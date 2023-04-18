@@ -10,6 +10,7 @@
 use std::borrow::Cow;
 use std::future::Future;
 use std::io::{self, Cursor};
+use std::iter::FusedIterator;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -78,6 +79,103 @@ pub trait CustomHandler: Send + Sync + Clone + 'static {
 }
 
 ///
+pub trait LinkIterator: Iterator<Item = Hash> + FusedIterator {
+    fn skip(&mut self, n: usize);
+}
+
+///
+pub trait CollectionParser: Send + Sync + Clone + 'static {
+    ///
+    type LinkIterator: LinkIterator;
+    ///
+    fn links(&self, format: u64, data: &[u8]) -> anyhow::Result<Self::LinkIterator>;
+}
+
+///
+#[derive(Debug)]
+pub struct ArrayLinkIterator {
+    ///
+    pub links: Vec<Hash>,
+    ///
+    pub offset: usize,
+}
+
+impl Iterator for ArrayLinkIterator {
+    type Item = Hash;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset < self.links.len() {
+            let hash = self.links[self.offset];
+            self.offset += 1;
+            Some(hash)
+        } else {
+            None
+        }
+    }
+}
+
+impl FusedIterator for ArrayLinkIterator {}
+
+impl LinkIterator for ArrayLinkIterator {
+    fn skip(&mut self, n: usize) {
+        self.offset = self.offset.saturating_add(n).min(self.links.len());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DefaultCollectionParser;
+
+#[derive(Debug, Clone)]
+pub struct CollectionLinksIter {
+    collection: Collection,
+    offset: usize,
+}
+
+impl Iterator for CollectionLinksIter {
+    type Item = Hash;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset < self.collection.blobs().len() {
+            let hash = self.collection.blobs()[self.offset].hash;
+            self.offset += 1;
+            Some(hash)
+        } else {
+            None
+        }
+    }
+}
+
+impl FusedIterator for CollectionLinksIter {}
+
+impl LinkIterator for CollectionLinksIter {
+    fn skip(&mut self, n: usize) {
+        self.offset = self
+            .offset
+            .saturating_add(n)
+            .min(self.collection.blobs().len());
+    }
+}
+
+impl<T: LinkIterator> LinkIterator for Box<T> {
+    fn skip(&mut self, n: usize) {
+        self.as_mut().skip(n);
+    }
+}
+
+impl CollectionParser for DefaultCollectionParser {
+    type LinkIterator = CollectionLinksIter;
+
+    fn links(&self, _format: u64, data: &[u8]) -> anyhow::Result<Self::LinkIterator> {
+        let collection = Collection::from_bytes(data)?;
+        let iter = CollectionLinksIter {
+            collection,
+            offset: 0,
+        };
+        Ok(iter)
+    }
+}
+
+///
 #[derive(Debug, Clone)]
 pub struct DefaultCustomHandler;
 
@@ -99,10 +197,11 @@ impl CustomHandler for DefaultCustomHandler {
 /// The returned [`Provider`] is awaitable to know when it finishes.  It can be terminated
 /// using [`Provider::shutdown`].
 #[derive(Debug)]
-pub struct Builder<E = DummyServerEndpoint, C = DefaultCustomHandler>
+pub struct Builder<E = DummyServerEndpoint, C = DefaultCustomHandler, CP = DefaultCollectionParser>
 where
     E: ServiceEndpoint<ProviderService>,
     C: CustomHandler,
+    CP: CollectionParser,
 {
     bind_addr: SocketAddr,
     keypair: Keypair,
@@ -111,6 +210,7 @@ where
     db: Database,
     keylog: bool,
     custom_handler: C,
+    collection_parser: CP,
 }
 
 /// A [`Database`] entry.
@@ -188,28 +288,35 @@ impl Builder {
             auth_token: AuthToken::generate(),
             rpc_endpoint: Default::default(),
             custom_handler: DefaultCustomHandler,
+            collection_parser: DefaultCollectionParser,
             db,
             keylog: false,
         }
     }
 }
 
-impl<E: ServiceEndpoint<ProviderService>, C: CustomHandler> Builder<E, C> {
+impl<E: ServiceEndpoint<ProviderService>, C: CustomHandler, CP: CollectionParser>
+    Builder<E, C, CP>
+{
     ///
-    pub fn rpc_endpoint<E2: ServiceEndpoint<ProviderService>>(self, value: E2) -> Builder<E2> {
+    pub fn rpc_endpoint<E2: ServiceEndpoint<ProviderService>>(
+        self,
+        value: E2,
+    ) -> Builder<E2, C, CP> {
         Builder {
             bind_addr: self.bind_addr,
             keypair: self.keypair,
             auth_token: self.auth_token,
             db: self.db,
             keylog: self.keylog,
+            custom_handler: self.custom_handler,
+            collection_parser: self.collection_parser,
             rpc_endpoint: value,
-            custom_handler: DefaultCustomHandler,
         }
     }
 
     ///
-    pub fn custom_handler<C2: CustomHandler>(self, custom_handler: C2) -> Builder<E, C2> {
+    pub fn custom_handler<C2: CustomHandler>(self, value: C2) -> Builder<E, C2, CP> {
         Builder {
             bind_addr: self.bind_addr,
             keypair: self.keypair,
@@ -217,7 +324,22 @@ impl<E: ServiceEndpoint<ProviderService>, C: CustomHandler> Builder<E, C> {
             db: self.db,
             keylog: self.keylog,
             rpc_endpoint: self.rpc_endpoint,
-            custom_handler,
+            collection_parser: self.collection_parser,
+            custom_handler: value,
+        }
+    }
+
+    ///
+    pub fn collection_parser<CP2: CollectionParser>(self, value: CP2) -> Builder<E, C, CP2> {
+        Builder {
+            bind_addr: self.bind_addr,
+            keypair: self.keypair,
+            auth_token: self.auth_token,
+            db: self.db,
+            keylog: self.keylog,
+            rpc_endpoint: self.rpc_endpoint,
+            custom_handler: self.custom_handler,
+            collection_parser: value,
         }
     }
 
