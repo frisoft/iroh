@@ -5,8 +5,12 @@ use crate::{
     Hash,
 };
 use anyhow::{Context, Result};
+use bao_tree::outboard;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{
+    stream::{BoxStream, LocalBoxStream},
+    Future, Stream, StreamExt,
+};
 use std::{
     collections::{BTreeSet, HashMap},
     fmt, io,
@@ -15,6 +19,139 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tokio::sync::mpsc;
+
+trait ReadSlice {
+    type ReadAtFuture<'a>: Future<Output = io::Result<()>> + 'a
+    where
+        Self: 'a;
+    fn read_at(&self, offset: u64, buffer: &mut bytes::BytesMut) -> Self::ReadAtFuture<'_>;
+    type LenFuture<'a>: Future<Output = io::Result<u64>> + 'a
+    where
+        Self: 'a;
+    fn len(&self) -> Self::LenFuture<'_>;
+}
+
+trait WriteSlice {
+    type WriteSliceFuture<'a>: Future<Output = io::Result<()>> + 'a
+    where
+        Self: 'a;
+    fn write_at(&self, offset: u64, buffer: &Bytes) -> Self::WriteSliceFuture<'_>;
+
+    type TruncateFuture<'a>: Future<Output = io::Result<()>> + 'a
+    where
+        Self: 'a;
+    fn truncate(&self, size: u64) -> Self::TruncateFuture<'_>;
+}
+
+trait HasId {
+    type Id: Send + Sync + 'static;
+    fn id(&self) -> Self::Id;
+}
+
+trait VFS {
+    type Id: Send + Sync + 'static;
+    type ReadRaw: ReadSlice + HasId + Unpin + 'static;
+    type WriteRaw: ReadSlice + WriteSlice + HasId + Unpin + 'static;
+    type ResultIterator: Iterator<Item = io::Result<Self::Id>> + Send + Sync + 'static;
+    /// create a handle for internal data
+    ///
+    /// `name_hint` is a hint for the internal name (base).
+    /// `purpose` can also be used as a hint for the internal name (extension).
+    fn create(&self, name_hint: &[u8], purpose: Purpose) -> io::Result<Self::WriteRaw>;
+    /// open an internal handle for reading
+    fn open_read(&self, handle: Self::Id) -> io::Result<Self::ReadRaw>;
+    /// open an internal handle for writing
+    fn open_write(&self, handle: Self::Id) -> io::Result<Self::WriteRaw>;
+    /// delete an internal handle
+    fn delete(&self, handle: Self::Id) -> io::Result<()>;
+    /// create a snapshot of the database and return an iterator over it
+    fn enumerate(&self) -> Self::ResultIterator;
+}
+
+trait ResourceLoader {
+    /// A stable resource identifier, like a path or an url
+    type Id: Send + Sync + 'static;
+    /// type of an open resouce
+    type ReadFile: ReadSlice + HasId + Unpin + 'static;
+    /// open a resource
+    fn open(&self, handle: Self::Id) -> Result<Self::ReadFile>;
+}
+
+enum Purpose {
+    /// File is going to be used to store data
+    Data,
+    /// File is going to be used to store a bao outboard
+    Outboard,
+    /// File is going to be used to store metadata
+    Meta,
+}
+
+type VfsId<X> = <X as VFS>::Id;
+type ExId<D> = <<D as AbstractDatabase>::External as ResourceLoader>::Id;
+type InId<D> = <<D as AbstractDatabase>::Internal as VFS>::Id;
+
+enum AdbId<D: AbstractDatabase> {
+    Internal(InId<D>),
+    External(ExId<D>),
+}
+
+struct AdbEntry<D: AbstractDatabase> {
+    outboard: AdbId<D>,
+    data: AdbId<D>,
+}
+
+trait AbstractDatabase: Sized {
+    /// The type of the internal VFS
+    type Internal: VFS;
+    /// The type of the external resource loader
+    type External: ResourceLoader;
+    /// The type of the temporary pin
+    type TempPin;
+    /// The type of the future returned by `get`
+    type GetFuture<'a>: Future<Output = io::Result<Option<AdbEntry<Self>>>> + 'a
+    where
+        Self: 'a;
+    /// The type of the future returned by `insert`
+    type InsertFuture<'a>: Future<Output = io::Result<Hash>> + 'a
+    where
+        Self: 'a;
+    /// The type of the future returned by `pin`
+    type PinFuture<'a>: Future<Output = io::Result<()>> + 'a
+    where
+        Self: 'a;
+    /// The type of the stream returned by `blobs`
+    type BlobStream<'a>: Stream<Item = io::Result<Hash>> + 'a
+    where
+        Self: 'a;
+    /// The type of the stream returned by `pins`
+    type PinStream<'a>: Stream<Item = io::Result<Vec<u8>>> + 'a
+    where
+        Self: 'a;
+    /// Create a new database or open an existing one.
+    ///
+    /// `name` is the name of the database. If `None`, a new database will be
+    /// created. Otherwise, the database will be opened.
+    /// `internal` is the internal VFS.
+    /// `external` is the external resource loader.
+    fn new(
+        name: Option<InId<Self>>,
+        internal: Self::Internal,
+        external: Self::External,
+    ) -> (Self, InId<Self>);
+    /// get the data and outboard for a given hash, if it exists
+    fn get(&self, key: &Hash) -> Self::GetFuture<'_>;
+    /// insert a new data and outboard pair
+    ///
+    /// if `outboard` is `None`, it will be generated from `data`. Otherwise it
+    /// will be assumed to match data.
+    fn insert(&self, data: AdbId<Self>, outboard: Option<AdbId<Self>>) -> Self::InsertFuture<'_>;
+    /// Enumerate all blobs in the database.
+    fn blobs(&self) -> Self::BlobStream<'_>;
+    /// Pin a blob in the database.
+    fn pin(&self, name: &[u8], hash: Option<&Hash>) -> Self::PinFuture<'_>;
+    /// Enumerate all pinned hashes in the database.
+    fn pins(&self) -> Self::PinStream<'_>;
+}
 
 /// File name of directory inside `IROH_DATA_DIR` where outboards are stored.
 const FNAME_OUTBOARDS: &str = "outboards";
