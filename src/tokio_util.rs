@@ -7,7 +7,7 @@ use std::{
 
 use bao_tree::io::fsm::AsyncSliceWriter;
 use bytes::Bytes;
-use futures::{future::BoxFuture, ready, Future, FutureExt};
+use futures::{future::{BoxFuture, LocalBoxFuture}, ready, Future, FutureExt};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, AsyncWriteExt},
@@ -110,7 +110,7 @@ impl<W: AsyncSliceWriter> ProgressSliceWriter<W> {
 }
 
 impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWriter<W> {
-    type WriteFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    type WriteFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
 
     fn write_at(self, offset: u64, data: Bytes) -> Self::WriteFuture {
         // use try_send so we don't block if updating the progress bar is slow
@@ -119,7 +119,7 @@ impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWri
             let (this, res) = self.0.write_at(offset, data).await;
             (Self(this, self.1), res)
         }
-        .boxed()
+        .boxed_local()
     }
 
     fn write_array_at<const N: usize>(self, offset: u64, bytes: [u8; N]) -> Self::WriteFuture {
@@ -129,7 +129,7 @@ impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWri
             let (this, res) = self.0.write_array_at(offset, bytes).await;
             (Self(this, self.1), res)
         }
-        .boxed()
+        .boxed_local()
     }
 }
 

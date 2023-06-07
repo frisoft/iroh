@@ -5,66 +5,178 @@ use crate::{
     Hash,
 };
 use anyhow::{Context, Result};
-use bao_tree::outboard;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{
-    stream::{BoxStream, LocalBoxStream},
-    Future, Stream, StreamExt,
+    Future, Stream, StreamExt, FutureExt, future::LocalBoxFuture,
 };
 use std::{
     collections::{BTreeSet, HashMap},
-    fmt, io,
+    fmt, io::{self, SeekFrom},
     path::{Path, PathBuf},
     result,
     sync::{Arc, RwLock},
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, io::{AsyncSeekExt, AsyncReadExt}};
 
 trait ReadSlice {
     type ReadAtFuture<'a>: Future<Output = io::Result<()>> + 'a
     where
         Self: 'a;
-    fn read_at(&self, offset: u64, buffer: &mut bytes::BytesMut) -> Self::ReadAtFuture<'_>;
+    fn read_at<'a>(&'a mut self, offset: u64, buf: &'a mut [u8]) -> Self::ReadAtFuture<'_>;
     type LenFuture<'a>: Future<Output = io::Result<u64>> + 'a
     where
         Self: 'a;
-    fn len(&self) -> Self::LenFuture<'_>;
+    fn len(&mut self) -> Self::LenFuture<'_>;
+}
+
+fn slice_read_at(slice: impl AsRef<[u8]>, offset: u64, buf: &mut [u8]) -> Option<()> {
+    let bytes = slice.as_ref();
+    let start: usize = offset.try_into().ok()?;
+    let end = start.checked_add(buf.len())?;
+    let len = bytes.len();
+    if end <= len {
+        buf.copy_from_slice(&bytes[start..end]);
+        Some(())
+    } else {
+        None
+    }
+}
+
+impl ReadSlice for tokio::fs::File {
+    type ReadAtFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
+    fn read_at<'a>(&'a mut self, offset: u64, buf: &'a mut [u8]) -> Self::ReadAtFuture<'a> {
+        async move {
+            self.seek(SeekFrom::Start(offset)).await?;
+            self.read_exact(buf).await?;
+            Ok(())
+        }.boxed_local()
+    }
+    type LenFuture<'a> = LocalBoxFuture<'a, io::Result<u64>>;
+    fn len(&mut self) -> Self::LenFuture<'_> {
+        async move {
+            let metadata = self.metadata().await?;
+            Ok(metadata.len())
+        }.boxed_local()
+    }
+}
+
+impl ReadSlice for Bytes {
+    type ReadAtFuture<'a> = futures::future::Ready<io::Result<()>>;
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Self::ReadAtFuture<'_> {
+        let res = slice_read_at(&self, offset, buf).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "offset {} and len {} is out of bounds for bytes of len {}",
+                    offset,
+                    buf.len(),
+                    Bytes::len(self)
+                ),
+            )
+        });
+        futures::future::ready(res)
+    }
+    type LenFuture<'a> = futures::future::Ready<io::Result<u64>>;
+    fn len(&mut self) -> Self::LenFuture<'_> {
+        futures::future::ready(Ok(Bytes::len(self) as u64))
+    }
+}
+
+impl ReadSlice for BytesMut {
+    type ReadAtFuture<'a> = futures::future::Ready<io::Result<()>>;
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Self::ReadAtFuture<'_> {
+        let res = slice_read_at(&self, offset, buf).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "offset {} and len {} is out of bounds for bytes of len {}",
+                    offset,
+                    buf.len(),
+                    BytesMut::len(self)
+                ),
+            )
+        });
+        futures::future::ready(res)
+    }
+    type LenFuture<'a> = futures::future::Ready<io::Result<u64>>;
+    fn len(&mut self) -> Self::LenFuture<'_> {
+        futures::future::ready(Ok(BytesMut::len(self) as u64))
+    }
 }
 
 trait WriteSlice {
     type WriteSliceFuture<'a>: Future<Output = io::Result<()>> + 'a
     where
         Self: 'a;
-    fn write_at(&self, offset: u64, buffer: &Bytes) -> Self::WriteSliceFuture<'_>;
+    fn write_at(&mut self, offset: u64, buffer: &[u8]) -> Self::WriteSliceFuture<'_>;
 
     type TruncateFuture<'a>: Future<Output = io::Result<()>> + 'a
     where
         Self: 'a;
-    fn truncate(&self, size: u64) -> Self::TruncateFuture<'_>;
+    fn truncate(&mut self, size: u64) -> Self::TruncateFuture<'_>;
 }
 
-trait HasId {
-    type Id: Send + Sync + 'static;
-    fn id(&self) -> Self::Id;
+fn bytes_mut_write_at(this: &mut BytesMut, offset: u64, buf: &[u8]) -> Option<()> {
+    let start: usize = offset.try_into().ok()?;
+    let end = start.checked_add(buf.len())?;
+    let len = BytesMut::len(this);
+    if end > len {
+        // add to the end
+        this.resize(start, 0);
+        this.extend_from_slice(buf);
+    } else {
+        // modify existing buffer
+        this[start..end].copy_from_slice(buf);
+    }
+    Some(())
+}
+
+impl WriteSlice for BytesMut {
+    type WriteSliceFuture<'a> = futures::future::Ready<io::Result<()>>;
+
+    fn write_at(&mut self, offset: u64, buffer: &[u8]) -> Self::WriteSliceFuture<'_> {
+        let res = bytes_mut_write_at(self, offset, buffer).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "offset {} and len {} is out of bounds for bytes of len {}",
+                    offset,
+                    buffer.len(),
+                    BytesMut::len(self)
+                ),
+            )
+        });
+        futures::future::ready(res)
+    }
+
+    type TruncateFuture<'a> = futures::future::Ready<io::Result<()>>;
+
+    fn truncate(&mut self, size: u64) -> Self::TruncateFuture<'_> {
+        // if size is > usize::MAX there is nothing to do
+        if let Ok(size) = size.try_into() {
+            self.truncate(size);
+        }
+        futures::future::ready(Ok(()))
+    }
 }
 
 trait VFS {
     type Id: Send + Sync + 'static;
-    type ReadRaw: ReadSlice + HasId + Unpin + 'static;
-    type WriteRaw: ReadSlice + WriteSlice + HasId + Unpin + 'static;
+    type ReadRaw: ReadSlice + Unpin + 'static;
+    type WriteRaw: ReadSlice + WriteSlice + Unpin + 'static;
     type ResultIterator: Iterator<Item = io::Result<Self::Id>> + Send + Sync + 'static;
     /// create a handle for internal data
     ///
     /// `name_hint` is a hint for the internal name (base).
     /// `purpose` can also be used as a hint for the internal name (extension).
-    fn create(&self, name_hint: &[u8], purpose: Purpose) -> io::Result<Self::WriteRaw>;
+    fn create(&self, name_hint: &[u8], purpose: Purpose) -> io::Result<Self::Id>;
     /// open an internal handle for reading
     fn open_read(&self, handle: Self::Id) -> io::Result<Self::ReadRaw>;
     /// open an internal handle for writing
     fn open_write(&self, handle: Self::Id) -> io::Result<Self::WriteRaw>;
     /// delete an internal handle
     fn delete(&self, handle: Self::Id) -> io::Result<()>;
-    /// create a snapshot of the database and return an iterator over it
+    /// create a snapshot of the vfs and return an iterator over it
     fn enumerate(&self) -> Self::ResultIterator;
 }
 
@@ -72,9 +184,9 @@ trait ResourceLoader {
     /// A stable resource identifier, like a path or an url
     type Id: Send + Sync + 'static;
     /// type of an open resouce
-    type ReadFile: ReadSlice + HasId + Unpin + 'static;
+    type ReadRaw: ReadSlice + Unpin + 'static;
     /// open a resource
-    fn open(&self, handle: Self::Id) -> Result<Self::ReadFile>;
+    fn open(&self, handle: Self::Id) -> Result<Self::ReadRaw>;
 }
 
 enum Purpose {
