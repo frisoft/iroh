@@ -9,7 +9,7 @@
 //! To shut down the provider, call [`Provider::shutdown`].
 use std::borrow::Cow;
 use std::future::Future;
-use std::io::{self, Cursor};
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -18,7 +18,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use bao_tree::io::fsm::encode_ranges_validated;
+use bao_tree::io::fsm::{encode_ranges_validated, Either, FileAdapter};
 use bao_tree::outboard::PreOrderMemOutboardRef;
 use bytes::{Bytes, BytesMut};
 use futures::future::{BoxFuture, Shared};
@@ -30,7 +30,6 @@ use quic_rpc::{RpcClient, RpcServer, ServiceConnection, ServiceEndpoint};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinError;
-use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, debug_span, trace, warn};
 use tracing_futures::Instrument;
@@ -168,10 +167,10 @@ impl DbEntry {
     }
 
     /// A reader for the data
-    async fn data_reader(&self) -> io::Result<Either<Cursor<Bytes>, tokio::fs::File>> {
+    async fn data_reader(&self) -> io::Result<Either<Bytes, FileAdapter>> {
         Ok(match self {
-            DbEntry::External { path, .. } => Either::Right(tokio::fs::File::open(path).await?),
-            DbEntry::Internal { data, .. } => Either::Left(Cursor::new(data.clone())),
+            DbEntry::External { path, .. } => Either::Right(FileAdapter::open(path)?),
+            DbEntry::Internal { data, .. } => Either::Left(data.clone()),
         })
     }
 
@@ -911,7 +910,7 @@ async fn transfer_collection(
     writer: &mut ResponseWriter,
     // the collection to transfer
     outboard: &Bytes,
-    data: Either<Cursor<Bytes>, tokio::fs::File>,
+    data: Either<Bytes, bao_tree::io::fsm::FileAdapter>,
 ) -> Result<SentStatus> {
     let mut data = bao_tree::io::fsm::Handle::new(data);
     let hash = request.hash;
@@ -1129,8 +1128,7 @@ async fn send_blob<W: AsyncWrite + Unpin + Send + 'static>(
             size,
         }) => {
             let outboard = PreOrderMemOutboardRef::new(name.into(), IROH_BLOCK_SIZE, &outboard)?;
-            let mut file_reader =
-                bao_tree::io::fsm::Handle::new(tokio::fs::File::open(&path).await?);
+            let mut file_reader = bao_tree::io::fsm::Handle::new(FileAdapter::open(&path)?);
             let res = bao_tree::io::fsm::encode_ranges_validated(
                 &mut file_reader,
                 outboard,
