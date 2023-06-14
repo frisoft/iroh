@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
-use bao_tree::io::fsm::FileAdapter;
+use bao_tree::io::fsm::{FileAdapter, AsyncSliceWriter};
 use clap::{Parser, Subcommand};
 use console::{style, Emoji};
 use futures::{Stream, StreamExt};
@@ -960,7 +960,7 @@ async fn get_to_file_single(
         .write(true)
         .create(true)
         .open(&data_path)?;
-    let data_file = FileAdapter(data_file);
+    let data_file = FileAdapter::from_std(data_file);
     let mut data_file = data_file.into();
     tracing::debug!("piping data to {:?} and {:?}", data_path, outboard_path);
     let (curr, size) = header.next().await?;
@@ -970,7 +970,7 @@ async fn get_to_file_single(
             .write(true)
             .create(true)
             .open(&outboard_path)?;
-        let outboard_file = FileAdapter(outboard_file);
+        let outboard_file = FileAdapter::from_std(outboard_file);
         let outboard_file = outboard_file.into();
         Some(outboard_file)
     } else {
@@ -980,13 +980,13 @@ async fn get_to_file_single(
         .write_all_with_outboard(&mut outboard_file, &mut data_file)
         .await?;
     // Flush the data file first, it is the only thing that matters at this point
-    data_file.into_inner().0.sync_all()?;
+    data_file.sync().await?;
     // Rename temp file, to target name
     // once this is done, the file is considered complete
     tokio::fs::rename(data_path, final_path).await?;
-    if let Some(outboard_file) = outboard_file.take() {
+    if let Some(mut outboard_file) = outboard_file.take() {
         // not sure if we have to do this
-        outboard_file.into_inner().0.sync_all()?;
+        outboard_file.sync().await?;
         // delete the outboard file
         tokio::fs::remove_file(outboard_path).await?;
     }
@@ -1093,7 +1093,7 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                 .write(true)
                 .create(true)
                 .open(&data_path)?;
-            let data_file = FileAdapter(data_file);
+            let data_file = FileAdapter::from_std(data_file);
             tracing::debug!("piping data to {:?} and {:?}", data_path, outboard_path);
             let (curr, size) = header.next().await?;
             pb.set_length(size);
@@ -1102,7 +1102,7 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                     .write(true)
                     .create(true)
                     .open(&outboard_path)?;
-                let outboard_file = FileAdapter(outboard_file);
+                let outboard_file = FileAdapter::from_std(outboard_file);
                 let outboard_file = outboard_file.into();
                 Some(outboard_file)
             } else {
@@ -1123,6 +1123,7 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                 .await?;
             // Flush the data file first, it is the only thing that matters at this point
             data_file.into_inner().into_inner().0.sync_all()?;
+            
             // wait for the progress task to finish, only after dropping the ProgressSliceWriter
             progress_task.await.ok();
             tokio::fs::create_dir_all(
@@ -1134,9 +1135,9 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
             // Rename temp file, to target name
             // once this is done, the file is considered complete
             tokio::fs::rename(data_path, final_path).await?;
-            if let Some(outboard_file) = outboard_file.take() {
+            if let Some(mut outboard_file) = outboard_file.take() {
                 // not sure if we have to do this
-                outboard_file.into_inner().0.sync_all()?;
+                outboard_file.sync().await?;
                 // delete the outboard file
                 tokio::fs::remove_file(outboard_path).await?;
             }
