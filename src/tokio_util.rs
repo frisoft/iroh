@@ -5,9 +5,11 @@ use std::{
     task::Poll,
 };
 
-use bao_tree::io::fsm::{AsyncSliceReader, AsyncSliceWriter, Either, FileAdapter};
+use bao_tree::io::fsm::{
+    AsyncSliceReaderFsm, AsyncSliceWriter, AsyncSliceWriterFsm, Either, FileAdapter,
+};
 use bytes::Bytes;
-use futures::{future::BoxFuture, Future, FutureExt};
+use futures::{future::LocalBoxFuture, Future, FutureExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     sync::mpsc,
@@ -71,17 +73,44 @@ impl<W> ConcatenateSliceWriter<W> {
     }
 }
 
-impl<W: AsyncWrite + Send + Unpin + 'static> AsyncSliceWriter for ConcatenateSliceWriter<W> {
-    type WriteAtFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriter for ConcatenateSliceWriter<W> {
+    type WriteAtFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
+    fn write_at(&mut self, _offset: u64, data: Bytes) -> Self::WriteAtFuture<'_> {
+        async move { self.0.write_all(&data).await }.boxed_local()
+    }
+
+    type WriteSliceAtFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
+    fn write_array_at<const N: usize>(
+        &mut self,
+        _offset: u64,
+        bytes: [u8; N],
+    ) -> Self::WriteSliceAtFuture<'_> {
+        async move { self.0.write_all(&bytes).await }.boxed_local()
+    }
+
+    type SyncFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
+    fn sync(&mut self) -> Self::SyncFuture<'_> {
+        self.0.flush().boxed_local()
+    }
+
+    type SetSizeFuture<'a> = LocalBoxFuture<'static, io::Result<()>>;
+
+    fn set_len(&mut self, len: u64) -> Self::SetSizeFuture<'_> {
+        todo!()
+    }
+}
+
+impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriterFsm for ConcatenateSliceWriter<W> {
+    type WriteAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn write_at(mut self, _offset: u64, data: Bytes) -> Self::WriteAtFuture {
         async move {
             let res = self.0.write_all(&data).await;
             (self, res)
         }
-        .boxed()
+        .boxed_local()
     }
 
-    type WriteArrayAtFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    type WriteArrayAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn write_array_at<const N: usize>(
         mut self,
         _offset: u64,
@@ -91,16 +120,16 @@ impl<W: AsyncWrite + Send + Unpin + 'static> AsyncSliceWriter for ConcatenateSli
             let res = self.0.write_all(&bytes).await;
             (self, res)
         }
-        .boxed()
+        .boxed_local()
     }
 
-    type SyncFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    type SyncFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn sync(mut self) -> Self::SyncFuture {
         async move {
             let res = self.0.flush().await;
             (self, res)
         }
-        .boxed()
+        .boxed_local()
     }
 }
 
@@ -108,7 +137,7 @@ impl<W: AsyncWrite + Send + Unpin + 'static> AsyncSliceWriter for ConcatenateSli
 #[derive(Debug)]
 pub struct ProgressSliceWriter<W>(W, mpsc::Sender<(u64, usize)>);
 
-impl<W: AsyncSliceWriter> ProgressSliceWriter<W> {
+impl<W> ProgressSliceWriter<W> {
     /// Create a new `ProgressSliceWriter` from an inner writer and a progress callback
     pub fn new(inner: W, on_write: mpsc::Sender<(u64, usize)>) -> Self {
         Self(inner, on_write)
@@ -120,8 +149,8 @@ impl<W: AsyncSliceWriter> ProgressSliceWriter<W> {
     }
 }
 
-impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWriter<W> {
-    type WriteAtFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+impl<W: AsyncSliceWriterFsm + 'static> AsyncSliceWriterFsm for ProgressSliceWriter<W> {
+    type WriteAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn write_at(self, offset: u64, data: Bytes) -> Self::WriteAtFuture {
         // use try_send so we don't block if updating the progress bar is slow
         self.1.try_send((offset, Bytes::len(&data))).ok();
@@ -129,10 +158,10 @@ impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWri
             let (this, res) = self.0.write_at(offset, data).await;
             (Self(this, self.1), res)
         }
-        .boxed()
+        .boxed_local()
     }
 
-    type WriteArrayAtFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    type WriteArrayAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn write_array_at<const N: usize>(
         self,
         offset: u64,
@@ -144,16 +173,46 @@ impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWri
             let (this, res) = self.0.write_array_at(offset, bytes).await;
             (Self(this, self.1), res)
         }
-        .boxed()
+        .boxed_local()
     }
 
-    type SyncFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    type SyncFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
     fn sync(self) -> Self::SyncFuture {
         async move {
             let (this, res) = self.0.sync().await;
             (Self(this, self.1), res)
         }
-        .boxed()
+        .boxed_local()
+    }
+}
+
+impl<W: AsyncSliceWriter + 'static> AsyncSliceWriter for ProgressSliceWriter<W> {
+    type WriteAtFuture<'a> = W::WriteAtFuture<'a>;
+    fn write_at(&mut self, offset: u64, data: Bytes) -> Self::WriteAtFuture<'_> {
+        // use try_send so we don't block if updating the progress bar is slow
+        self.1.try_send((offset, Bytes::len(&data))).ok();
+        self.0.write_at(offset, data)
+    }
+
+    type WriteSliceAtFuture<'a> = W::WriteSliceAtFuture<'a>;
+    fn write_array_at<const N: usize>(
+        &mut self,
+        offset: u64,
+        bytes: [u8; N],
+    ) -> Self::WriteSliceAtFuture<'_> {
+        // use try_send so we don't block if updating the progress bar is slow
+        self.1.try_send((offset, bytes.len())).ok();
+        self.0.write_array_at(offset, bytes)
+    }
+
+    type SyncFuture<'a> = W::SyncFuture<'a>;
+    fn sync(&mut self) -> Self::SyncFuture<'_> {
+        self.0.sync()
+    }
+
+    type SetSizeFuture<'a> = W::SetSizeFuture<'a>;
+    fn set_len(&mut self, size: u64) -> Self::SetSizeFuture<'_> {
+        self.0.set_len(size)
     }
 }
 

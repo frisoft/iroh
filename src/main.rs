@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
-use bao_tree::io::fsm::FileAdapter;
+use bao_tree::io::fsm::{AsyncSliceWriter, FileAdapter, Handle};
 use clap::{Parser, Subcommand};
 use console::{style, Emoji};
 use futures::{Stream, StreamExt};
@@ -968,7 +968,7 @@ async fn get_to_file_single(
         .create(true)
         .open(&data_path)?;
     let data_file = FileAdapter::from_std(data_file);
-    let mut data_file = data_file.into();
+    let mut data_file = Handle::from(data_file);
     tracing::debug!("piping data to {:?} and {:?}", data_path, outboard_path);
     let (curr, size) = header.next().await?;
     pb.set_length(size);
@@ -978,7 +978,7 @@ async fn get_to_file_single(
             .create(true)
             .open(&outboard_path)?;
         let outboard_file = FileAdapter::from_std(outboard_file);
-        let outboard_file = outboard_file.into();
+        let outboard_file = Handle::from(outboard_file);
         Some(outboard_file)
     } else {
         None
@@ -1110,7 +1110,7 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                     .create(true)
                     .open(&outboard_path)?;
                 let outboard_file = FileAdapter::from_std(outboard_file);
-                let outboard_file = outboard_file.into();
+                let outboard_file = Handle::from(outboard_file);
                 Some(outboard_file)
             } else {
                 None
@@ -1124,7 +1124,7 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                     pb2.set_position(offset);
                 }
             });
-            let mut data_file = ProgressSliceWriter::new(data_file, on_write).into();
+            let mut data_file = Handle::from(ProgressSliceWriter::new(data_file, on_write));
             let curr = curr
                 .write_all_with_outboard(&mut outboard_file, &mut data_file)
                 .await?;
@@ -1180,7 +1180,7 @@ async fn get_to_dir(get: GetInteractive, out_dir: PathBuf) -> Result<()> {
 
 async fn get_to_stdout_single(curr: get::get_response_machine::AtStartRoot) -> Result<get::Stats> {
     let curr = curr.next();
-    let mut handle = ConcatenateSliceWriter::new(tokio::io::stdout()).into();
+    let mut handle = Handle::from(ConcatenateSliceWriter::new(tokio::io::stdout()));
     let curr = curr.write_all(&mut handle).await?;
     let EndBlobNext::Closing(curr) = curr.next() else {
         anyhow::bail!("expected end of stream")
@@ -1239,9 +1239,10 @@ async fn get_to_stdout_multi(
                 pb2.set_position(offset);
             }
         });
-        let mut writer =
-            ProgressSliceWriter::new(ConcatenateSliceWriter::new(tokio::io::stdout()), on_write)
-                .into();
+        let mut writer = Handle::from(ProgressSliceWriter::new(
+            ConcatenateSliceWriter::new(tokio::io::stdout()),
+            on_write,
+        ));
         let curr = header.write_all(&mut writer).await?;
         drop(writer);
         // wait for the progress task to finish, only after dropping the writer
