@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
-use bao_tree::io::fsm::{FileAdapter, AsyncSliceWriter};
+use bao_tree::io::fsm::FileAdapter;
 use clap::{Parser, Subcommand};
 use console::{style, Emoji};
 use futures::{Stream, StreamExt};
@@ -1122,8 +1122,9 @@ async fn get_to_dir_multi(get: GetInteractive, out_dir: PathBuf, temp_dir: PathB
                 .write_all_with_outboard(&mut outboard_file, &mut data_file)
                 .await?;
             // Flush the data file first, it is the only thing that matters at this point
-            data_file.into_inner().into_inner().0.sync_all()?;
-            
+            data_file.sync().await?;
+            drop(data_file);
+
             // wait for the progress task to finish, only after dropping the ProgressSliceWriter
             progress_task.await.ok();
             tokio::fs::create_dir_all(
