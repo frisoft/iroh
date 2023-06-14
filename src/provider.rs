@@ -169,7 +169,7 @@ impl DbEntry {
     /// A reader for the data
     async fn data_reader(&self) -> io::Result<Either<Bytes, FileAdapter>> {
         Ok(match self {
-            DbEntry::External { path, .. } => Either::Right(FileAdapter::open(path)?),
+            DbEntry::External { path, .. } => Either::Right(FileAdapter::open(path.clone()).await?),
             DbEntry::Internal { data, .. } => Either::Left(data.clone()),
         })
     }
@@ -1128,7 +1128,8 @@ async fn send_blob<W: AsyncWrite + Unpin + Send + 'static>(
             size,
         }) => {
             let outboard = PreOrderMemOutboardRef::new(name.into(), IROH_BLOCK_SIZE, &outboard)?;
-            let mut file_reader = bao_tree::io::fsm::Handle::new(FileAdapter::open(&path)?);
+            let mut file_reader =
+                bao_tree::io::fsm::Handle::new(FileAdapter::open(path.clone()).await?);
             let res = bao_tree::io::fsm::encode_ranges_validated(
                 &mut file_reader,
                 outboard,

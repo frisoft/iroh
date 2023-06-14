@@ -6,7 +6,7 @@ use std::{
 };
 
 use bao_tree::io::fsm::{AsyncSliceReader, AsyncSliceWriter, Either, FileAdapter};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{future::BoxFuture, Future, FutureExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -93,6 +93,15 @@ impl<W: AsyncWrite + Send + Unpin + 'static> AsyncSliceWriter for ConcatenateSli
         }
         .boxed()
     }
+
+    type SyncFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    fn sync(mut self) -> Self::SyncFuture {
+        async move {
+            let res = self.0.flush().await;
+            (self, res)
+        }
+        .boxed()
+    }
 }
 
 /// A slice writer that adds a synchronous progress callback
@@ -133,6 +142,15 @@ impl<W: AsyncSliceWriter + Send + 'static> AsyncSliceWriter for ProgressSliceWri
         self.1.try_send((offset, bytes.len())).ok();
         async move {
             let (this, res) = self.0.write_array_at(offset, bytes).await;
+            (Self(this, self.1), res)
+        }
+        .boxed()
+    }
+
+    type SyncFuture = BoxFuture<'static, (Self, io::Result<()>)>;
+    fn sync(self) -> Self::SyncFuture {
+        async move {
+            let (this, res) = self.0.sync().await;
             (Self(this, self.1), res)
         }
         .boxed()
@@ -254,10 +272,8 @@ pub(crate) async fn read_as_bytes(reader: &mut Either<Bytes, FileAdapter>) -> io
             let t: FileAdapter = file.clone();
             let (t, len) = t.len().await;
             let len = len?;
-            let buf = BytesMut::with_capacity(len as usize);
-            let (_t, buf, res) = t.read_at(0, buf).await;
-            res?;
-            Ok(buf.freeze())
+            let (_t, res) = t.read_at(0, len as usize).await;
+            res
         }
     }
 }
