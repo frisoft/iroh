@@ -65,7 +65,7 @@ fn make_partial_download(out_dir: &Path) -> anyhow::Result<iroh::Hash> {
 }
 
 #[test]
-fn cli_provide_one_file() -> Result<()> {
+fn cli_provide_one_file_multi() -> Result<()> {
     let dir = testdir!();
     let path = dir.join("foo");
     make_rand_file(1000, &path)?;
