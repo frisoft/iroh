@@ -5,9 +5,7 @@ use std::{
     task::Poll,
 };
 
-use bao_tree::io::fsm::{
-    AsyncSliceReaderFsm, AsyncSliceWriter, AsyncSliceWriterFsm, Either, FileAdapterFsm,
-};
+use bao_tree::io::fsm::{AsyncSliceReader, AsyncSliceWriter, Either};
 use bytes::Bytes;
 use futures::{future::LocalBoxFuture, Future, FutureExt};
 use tokio::{
@@ -100,45 +98,6 @@ impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriter for ConcatenateSliceWrite
     }
 }
 
-impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriterFsm for ConcatenateSliceWriter<W> {
-    type WriteAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn write_at(mut self, _offset: u64, data: Bytes) -> Self::WriteAtFuture {
-        async move {
-            let res = self.0.write_all(&data).await;
-            (self, res)
-        }
-        .boxed_local()
-    }
-
-    type WriteArrayAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn write_array_at<const N: usize>(
-        mut self,
-        _offset: u64,
-        bytes: [u8; N],
-    ) -> Self::WriteArrayAtFuture {
-        async move {
-            let res = self.0.write_all(&bytes).await;
-            (self, res)
-        }
-        .boxed_local()
-    }
-
-    type SyncFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn sync(mut self) -> Self::SyncFuture {
-        async move {
-            let res = self.0.flush().await;
-            (self, res)
-        }
-        .boxed_local()
-    }
-
-    type SetLenFuture = futures::future::Ready<(Self, io::Result<()>)>;
-    fn set_len(self, _len: u64) -> Self::SetLenFuture {
-        // set_len is a noop
-        futures::future::ready((self, io::Result::Ok(())))
-    }
-}
-
 /// A slice writer that adds a synchronous progress callback
 #[derive(Debug)]
 pub struct ProgressSliceWriter<W>(W, mpsc::Sender<(u64, usize)>);
@@ -152,52 +111,6 @@ impl<W> ProgressSliceWriter<W> {
     /// Return the inner writer
     pub fn into_inner(self) -> W {
         self.0
-    }
-}
-
-impl<W: AsyncSliceWriterFsm + 'static> AsyncSliceWriterFsm for ProgressSliceWriter<W> {
-    type WriteAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn write_at(self, offset: u64, data: Bytes) -> Self::WriteAtFuture {
-        // use try_send so we don't block if updating the progress bar is slow
-        self.1.try_send((offset, Bytes::len(&data))).ok();
-        async move {
-            let (this, res) = self.0.write_at(offset, data).await;
-            (Self(this, self.1), res)
-        }
-        .boxed_local()
-    }
-
-    type WriteArrayAtFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn write_array_at<const N: usize>(
-        self,
-        offset: u64,
-        bytes: [u8; N],
-    ) -> Self::WriteArrayAtFuture {
-        // use try_send so we don't block if updating the progress bar is slow
-        self.1.try_send((offset, bytes.len())).ok();
-        async move {
-            let (this, res) = self.0.write_array_at(offset, bytes).await;
-            (Self(this, self.1), res)
-        }
-        .boxed_local()
-    }
-
-    type SyncFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn sync(self) -> Self::SyncFuture {
-        async move {
-            let (this, res) = self.0.sync().await;
-            (Self(this, self.1), res)
-        }
-        .boxed_local()
-    }
-
-    type SetLenFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
-    fn set_len(self, len: u64) -> Self::SyncFuture {
-        async move {
-            let (this, res) = self.0.set_len(len).await;
-            (Self(this, self.1), res)
-        }
-        .boxed_local()
     }
 }
 
@@ -339,14 +252,14 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for ProgressWriter<W> {
     }
 }
 
-pub(crate) async fn read_as_bytes(reader: &mut Either<Bytes, FileAdapterFsm>) -> io::Result<Bytes> {
+pub(crate) async fn read_as_bytes(
+    reader: &mut Either<Bytes, bao_tree::io::fsm::FileAdapter>,
+) -> io::Result<Bytes> {
     match reader {
         Either::Left(bytes) => Ok(bytes.clone()),
         Either::Right(file) => {
-            let t: FileAdapterFsm = file.clone();
-            let (t, len) = t.len().await;
-            let len = len?;
-            let (_t, res) = t.read_at(0, len as usize).await;
+            let len = file.len().await?;
+            let res = file.read_at(0, len as usize).await;
             res
         }
     }

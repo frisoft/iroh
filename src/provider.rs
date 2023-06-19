@@ -18,7 +18,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use bao_tree::io::fsm::{encode_ranges_validated, Either, FileAdapterFsm};
+use bao_tree::io::fsm::{encode_ranges_validated, Either};
 use bao_tree::outboard::PreOrderMemOutboardRef;
 use bytes::{Bytes, BytesMut};
 use futures::future::{BoxFuture, Shared};
@@ -168,10 +168,10 @@ impl DbEntry {
     }
 
     /// A reader for the data
-    async fn data_reader(&self) -> io::Result<Either<Bytes, FileAdapterFsm>> {
+    async fn data_reader(&self) -> io::Result<Either<Bytes, bao_tree::io::fsm::FileAdapter>> {
         Ok(match self {
             DbEntry::External { path, .. } => {
-                Either::Right(FileAdapterFsm::open(path.clone()).await?)
+                Either::Right(bao_tree::io::fsm::FileAdapter::open(path.clone()).await?)
             }
             DbEntry::Internal { data, .. } => Either::Left(data.clone()),
         })
@@ -944,16 +944,15 @@ async fn transfer_collection(
     writer: &mut ResponseWriter,
     // the collection to transfer
     outboard: &Bytes,
-    data: Either<Bytes, bao_tree::io::fsm::FileAdapterFsm>,
+    mut data: Either<Bytes, bao_tree::io::fsm::FileAdapter>,
 ) -> Result<SentStatus> {
-    let mut data = bao_tree::io::fsm::Handle::new(data);
     let hash = request.hash;
     let outboard = PreOrderMemOutboardRef::new(hash.into(), IROH_BLOCK_SIZE, outboard)?;
 
     // if the request is just for the root, we don't need to deserialize the collection
     let just_root = matches!(request.ranges.single(), Some((0, _)));
     let c = if !just_root {
-        let bytes = read_as_bytes(data.as_mut()).await?;
+        let bytes = read_as_bytes(&mut data).await?;
         let c: Collection = postcard::from_bytes(&bytes)?;
         let _ = writer.events.send(Event::TransferCollectionStarted {
             connection_id: writer.connection_id(),
@@ -1162,8 +1161,7 @@ async fn send_blob<W: AsyncWrite + Unpin + Send + 'static>(
             size,
         }) => {
             let outboard = PreOrderMemOutboardRef::new(name.into(), IROH_BLOCK_SIZE, &outboard)?;
-            let mut file_reader =
-                bao_tree::io::fsm::Handle::new(FileAdapterFsm::open(path.clone()).await?);
+            let mut file_reader = bao_tree::io::fsm::FileAdapter::open(path.clone()).await?;
             let res = bao_tree::io::fsm::encode_ranges_validated(
                 &mut file_reader,
                 outboard,
