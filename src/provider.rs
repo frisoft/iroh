@@ -18,7 +18,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use bao_tree::io::fsm::{encode_ranges_validated, Either, FileAdapter};
+use bao_tree::io::fsm::{encode_ranges_validated, Either, FileAdapterFsm};
 use bao_tree::outboard::PreOrderMemOutboardRef;
 use bytes::{Bytes, BytesMut};
 use futures::future::{BoxFuture, Shared};
@@ -168,9 +168,11 @@ impl DbEntry {
     }
 
     /// A reader for the data
-    async fn data_reader(&self) -> io::Result<Either<Bytes, FileAdapter>> {
+    async fn data_reader(&self) -> io::Result<Either<Bytes, FileAdapterFsm>> {
         Ok(match self {
-            DbEntry::External { path, .. } => Either::Right(FileAdapter::open(path.clone()).await?),
+            DbEntry::External { path, .. } => {
+                Either::Right(FileAdapterFsm::open(path.clone()).await?)
+            }
             DbEntry::Internal { data, .. } => Either::Left(data.clone()),
         })
     }
@@ -942,7 +944,7 @@ async fn transfer_collection(
     writer: &mut ResponseWriter,
     // the collection to transfer
     outboard: &Bytes,
-    data: Either<Bytes, bao_tree::io::fsm::FileAdapter>,
+    data: Either<Bytes, bao_tree::io::fsm::FileAdapterFsm>,
 ) -> Result<SentStatus> {
     let mut data = bao_tree::io::fsm::Handle::new(data);
     let hash = request.hash;
@@ -1161,7 +1163,7 @@ async fn send_blob<W: AsyncWrite + Unpin + Send + 'static>(
         }) => {
             let outboard = PreOrderMemOutboardRef::new(name.into(), IROH_BLOCK_SIZE, &outboard)?;
             let mut file_reader =
-                bao_tree::io::fsm::Handle::new(FileAdapter::open(path.clone()).await?);
+                bao_tree::io::fsm::Handle::new(FileAdapterFsm::open(path.clone()).await?);
             let res = bao_tree::io::fsm::encode_ranges_validated(
                 &mut file_reader,
                 outboard,

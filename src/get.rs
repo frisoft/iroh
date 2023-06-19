@@ -223,7 +223,7 @@ pub mod get_response_machine {
 
     use bao_tree::io::{
         fsm::{
-            AsyncSliceWriter, Handle, ResponseDecoderReading, ResponseDecoderReadingNext,
+            AsyncSliceWriter, ResponseDecoderReading, ResponseDecoderReadingNext,
             ResponseDecoderStart,
         },
         Leaf, Parent,
@@ -541,9 +541,9 @@ pub mod get_response_machine {
         ) -> result::Result<(AtEndBlob, Vec<u8>), DecodeError> {
             let (curr, size) = self.next().await?;
             let res = Vec::with_capacity(size as usize);
-            let mut handle = ConcatenateSliceWriter::new(res);
-            let res = curr.write_all(&mut handle).await?;
-            Ok((res, handle.into_inner()))
+            let mut writer = ConcatenateSliceWriter::new(res);
+            let res = curr.write_all(&mut writer).await?;
+            Ok((res, writer.into_inner()))
         }
 
         /// Write the entire blob to a slice writer

@@ -47,6 +47,7 @@ paste = "1.0.12"
 portable-atomic = "1"
 postcard = { version = "1", default-features = false, features = ["alloc", "use-std", "experimental-derive"] }
 prometheus-client = { version = "0.18.0", optional = true }
+proptest = "1.0.0"
 quic-rpc = { version = "0.6", default-features = false, features = ["quinn-transport", "flume-transport"] }
 quinn = "0.10"
 quinn-proto = "0.10"

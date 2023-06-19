@@ -6,7 +6,7 @@ use std::{
 };
 
 use bao_tree::io::fsm::{
-    AsyncSliceReaderFsm, AsyncSliceWriter, AsyncSliceWriterFsm, Either, FileAdapter,
+    AsyncSliceReaderFsm, AsyncSliceWriter, AsyncSliceWriterFsm, Either, FileAdapterFsm,
 };
 use bytes::Bytes;
 use futures::{future::LocalBoxFuture, Future, FutureExt};
@@ -79,12 +79,12 @@ impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriter for ConcatenateSliceWrite
         async move { self.0.write_all(&data).await }.boxed_local()
     }
 
-    type WriteSliceAtFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
+    type WriteArrayAtFuture<'a> = LocalBoxFuture<'a, io::Result<()>>;
     fn write_array_at<const N: usize>(
         &mut self,
         _offset: u64,
         bytes: [u8; N],
-    ) -> Self::WriteSliceAtFuture<'_> {
+    ) -> Self::WriteArrayAtFuture<'_> {
         async move { self.0.write_all(&bytes).await }.boxed_local()
     }
 
@@ -93,10 +93,10 @@ impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriter for ConcatenateSliceWrite
         self.0.flush().boxed_local()
     }
 
-    type SetSizeFuture<'a> = LocalBoxFuture<'static, io::Result<()>>;
+    type SetLenFuture<'a> = futures::future::Ready<io::Result<()>>;
 
-    fn set_len(&mut self, len: u64) -> Self::SetSizeFuture<'_> {
-        todo!()
+    fn set_len(&mut self, _len: u64) -> Self::SetLenFuture<'_> {
+        futures::future::ready(io::Result::Ok(()))
     }
 }
 
@@ -130,6 +130,12 @@ impl<W: AsyncWrite + Unpin + 'static> AsyncSliceWriterFsm for ConcatenateSliceWr
             (self, res)
         }
         .boxed_local()
+    }
+
+    type SetLenFuture = futures::future::Ready<(Self, io::Result<()>)>;
+    fn set_len(self, _len: u64) -> Self::SetLenFuture {
+        // set_len is a noop
+        futures::future::ready((self, io::Result::Ok(())))
     }
 }
 
@@ -184,6 +190,15 @@ impl<W: AsyncSliceWriterFsm + 'static> AsyncSliceWriterFsm for ProgressSliceWrit
         }
         .boxed_local()
     }
+
+    type SetLenFuture = LocalBoxFuture<'static, (Self, io::Result<()>)>;
+    fn set_len(self, len: u64) -> Self::SyncFuture {
+        async move {
+            let (this, res) = self.0.set_len(len).await;
+            (Self(this, self.1), res)
+        }
+        .boxed_local()
+    }
 }
 
 impl<W: AsyncSliceWriter + 'static> AsyncSliceWriter for ProgressSliceWriter<W> {
@@ -194,12 +209,12 @@ impl<W: AsyncSliceWriter + 'static> AsyncSliceWriter for ProgressSliceWriter<W> 
         self.0.write_at(offset, data)
     }
 
-    type WriteSliceAtFuture<'a> = W::WriteSliceAtFuture<'a>;
+    type WriteArrayAtFuture<'a> = W::WriteArrayAtFuture<'a>;
     fn write_array_at<const N: usize>(
         &mut self,
         offset: u64,
         bytes: [u8; N],
-    ) -> Self::WriteSliceAtFuture<'_> {
+    ) -> Self::WriteArrayAtFuture<'_> {
         // use try_send so we don't block if updating the progress bar is slow
         self.1.try_send((offset, bytes.len())).ok();
         self.0.write_array_at(offset, bytes)
@@ -210,8 +225,8 @@ impl<W: AsyncSliceWriter + 'static> AsyncSliceWriter for ProgressSliceWriter<W> 
         self.0.sync()
     }
 
-    type SetSizeFuture<'a> = W::SetSizeFuture<'a>;
-    fn set_len(&mut self, size: u64) -> Self::SetSizeFuture<'_> {
+    type SetLenFuture<'a> = W::SetLenFuture<'a>;
+    fn set_len(&mut self, size: u64) -> Self::SetLenFuture<'_> {
         self.0.set_len(size)
     }
 }
@@ -324,11 +339,11 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for ProgressWriter<W> {
     }
 }
 
-pub(crate) async fn read_as_bytes(reader: &mut Either<Bytes, FileAdapter>) -> io::Result<Bytes> {
+pub(crate) async fn read_as_bytes(reader: &mut Either<Bytes, FileAdapterFsm>) -> io::Result<Bytes> {
     match reader {
         Either::Left(bytes) => Ok(bytes.clone()),
         Either::Right(file) => {
-            let t: FileAdapter = file.clone();
+            let t: FileAdapterFsm = file.clone();
             let (t, len) = t.len().await;
             let len = len?;
             let (_t, res) = t.read_at(0, len as usize).await;
