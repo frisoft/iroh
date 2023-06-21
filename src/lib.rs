@@ -208,14 +208,21 @@ mod tests {
 
         let mut tasks = Vec::new();
         for _i in 0..3 {
-            tasks.push(tokio::task::spawn(run_client(
-                hash,
-                expect_hash.into(),
-                expect_name.clone(),
-                provider.local_address().unwrap(),
-                provider.peer_id(),
-                content.to_vec(),
-            )));
+            let expect_name = expect_name.clone();
+            let addrs = provider.local_address().unwrap();
+            let peer_id = provider.peer_id();
+            tasks.push(rt.local_pool().spawn_pinned(move || async move {
+                run_client(
+                    hash,
+                    expect_hash.into(),
+                    expect_name.clone(),
+                    addrs,
+                    peer_id,
+                    content.to_vec(),
+                )
+                .await
+                .unwrap();
+            }));
         }
 
         futures::future::join_all(tasks).await;
