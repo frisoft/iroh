@@ -10,7 +10,9 @@ use tracing::debug;
 
 pub const SYNC_ALPN: &[u8] = b"n0/iroh-sync/1";
 
+mod content;
 mod live;
+pub use content::*;
 pub use live::*;
 
 /// Sync Protocol

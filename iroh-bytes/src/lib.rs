@@ -9,6 +9,7 @@ pub mod protocol;
 pub mod provider;
 pub mod runtime;
 pub mod util;
+pub mod writable;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
