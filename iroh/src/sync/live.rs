@@ -80,7 +80,7 @@ impl LiveSync {
         Ok(())
     }
 
-    pub async fn sync_doc(&self, doc: Replica, initial_peers: Vec<PeerSource>) -> Result<()> {
+    pub async fn add(&self, doc: Replica, initial_peers: Vec<PeerSource>) -> Result<()> {
         self.to_actor_tx
             .send(ToActor::SyncDoc { doc, initial_peers })
             .await?;
@@ -200,9 +200,16 @@ impl Actor {
 
     async fn insert_doc(&mut self, doc: Replica, initial_peers: Vec<PeerSource>) -> Result<()> {
         let peer_ids: Vec<PeerId> = initial_peers.iter().map(|p| p.peer_id).collect();
-        let topic: TopicId = doc.namespace().as_bytes().into();
+
+        // add addresses of initial peers to our endpoint address book
+        for peer in &initial_peers {
+            self.endpoint
+                .add_known_addrs(peer.peer_id, &peer.addrs)
+                .await?;
+        }
+
         // join gossip for the topic to receive and send message
-        // let gossip = self.gossip.clone();
+        let topic: TopicId = doc.namespace().as_bytes().into();
         self.pending_joins.push({
             let peer_ids = peer_ids.clone();
             let gossip = self.gossip.clone();
@@ -212,21 +219,19 @@ impl Actor {
             }
             .boxed()
         });
+
         // setup replica insert notifications.
-        let insert_entry_tx = self.insert_entry_tx.clone();
-        doc.on_insert(Box::new(move |origin, entry| {
-            // only care for local inserts, otherwise we'd do endless gossip loops
-            if let InsertOrigin::Local = origin {
-                insert_entry_tx.send((topic, entry)).ok();
-            }
-        }));
-        self.docs.insert(topic, doc);
-        // add addresses of initial peers to our endpoint address book
-        for peer in &initial_peers {
-            self.endpoint
-                .add_known_addrs(peer.peer_id, &peer.addrs)
-                .await?;
+        if !self.docs.contains_key(&topic) {
+            let insert_entry_tx = self.insert_entry_tx.clone();
+            doc.on_insert(Box::new(move |origin, entry| {
+                // only care for local inserts, otherwise we'd do endless gossip loops
+                if let InsertOrigin::Local = origin {
+                    insert_entry_tx.send((topic, entry)).ok();
+                }
+            }));
+            self.docs.insert(topic, doc);
         }
+
         // trigger initial sync with initial peers
         for peer in peer_ids {
             self.sync_with_peer(topic, peer);
