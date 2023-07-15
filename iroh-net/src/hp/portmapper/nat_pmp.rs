@@ -96,7 +96,8 @@ impl super::mapping::PortMapped for Mapping {
     }
 }
 
-const RECV_TIMEOUT: Duration = Duration::from_secs(3);
+/// Timeout to receive a response from a NAT-PMP server.
+const RECV_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub async fn probe_available(local_ip: Ipv4Addr, gateway: Ipv4Addr) -> bool {
     debug!("starting probe");
@@ -123,10 +124,13 @@ async fn probe_available_fallible(
     local_ip: Ipv4Addr,
     gateway: Ipv4Addr,
 ) -> anyhow::Result<Response> {
+    // create the socket and send the request
     let socket = tokio::net::UdpSocket::bind((local_ip, 0)).await?;
     socket.connect((gateway, SERVER_PORT)).await?;
     let req = Request::ExternalAddress;
     socket.send(&req.encode()).await?;
+
+    // wait for the response and decode it
     let mut buffer = vec![0; MAX_RESP_SIZE];
     let read = tokio::time::timeout(RECV_TIMEOUT, socket.recv(&mut buffer)).await??;
     let response = Response::decode(&buffer[..read])?;
