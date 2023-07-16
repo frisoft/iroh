@@ -1,5 +1,7 @@
 use std::net::Ipv4Addr;
 
+use num_enum::TryFromPrimitive;
+
 use super::{MapProtocol, Opcode, Version};
 
 #[derive(Debug)]
@@ -18,7 +20,7 @@ pub enum Response {
 }
 
 // 3.5.  Result Codes
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u16)]
 pub enum ResultCode {
     Success = 0,
@@ -60,111 +62,46 @@ pub enum Error {
     UnsupportedOpcode,
 }
 
-/// Minimum size of an encoded [`Response`] sent by a server to this client.
-// NOTE: 1byte for the version +
-//       1byte for the opcode +
-//       2byte for the result code +
-//       4bytes for the epoch time +
-//       4bytes for the ip addr = response size for a public ip request
-pub const MIN_RESP_SIZE: usize = 1 + 1 + 2 + 4 + 4;
-/// Minimum size of an encoded [`Response`] sent by a server to this client.
-// NOTE: 1byte for the version +
-//       1byte for the opcode +
-//       2byte for the result code +
-//       4bytes for the epoch time +
-//       2bytes for the private port +
-//       2bytes for the public port +
-//       4bytes for the lifetime = response size for a mapping request
-pub const MAX_RESP_SIZE: usize = 1 + 1 + 2 + 4 + 2 + 2 + 4;
-
-/// Indicator ORd into the [`Opcode`] to indicate a response packet.
-pub const RESPONSE_INDICATOR: u8 = 1u8 << 7;
-
-/// Error ocurring when attempting to identity the [`Opcode`] in a server response.
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidOpcode;
-
-impl TryFrom<u8> for Opcode {
-    type Error = InvalidOpcode;
-
-    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Opcode::DetermineExternalAddress),
-            1 => Ok(Opcode::MapUdp),
-            2 => Ok(Opcode::MapTcp),
-            _ => Err(InvalidOpcode),
-        }
-    }
-}
-
-/// Error ocurring when attempting to identify the [`Version`] in a server response.
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidVersion;
-
-impl TryFrom<u8> for Version {
-    type Error = InvalidVersion;
-
-    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Version::NatPmp),
-            _ => Err(InvalidVersion),
-        }
-    }
-}
-
-/// Error ocurring when attempting to decode the [`ResultCode`] in a server response.
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidResultCode;
-
-impl TryFrom<u16> for ResultCode {
-    type Error = InvalidResultCode;
-
-    fn try_from(value: u16) -> std::result::Result<Self, Self::Error> {
-        match value {
-            0 => Ok(ResultCode::Success),
-            1 => Ok(ResultCode::UnsupportedVersion),
-            2 => Ok(ResultCode::NotAuthorizedOrRefused),
-            3 => Ok(ResultCode::NetworkFailure),
-            4 => Ok(ResultCode::OutOfResources),
-            5 => Ok(ResultCode::UnsupportedOpcode),
-            _ => Err(InvalidResultCode),
-        }
-    }
-}
-
-impl From<InvalidOpcode> for Error {
-    fn from(_: InvalidOpcode) -> Self {
-        Error::InvalidOpcode
-    }
-}
-
-impl From<InvalidVersion> for Error {
-    fn from(_: InvalidVersion) -> Self {
-        Error::InvalidVersion
-    }
-}
-
-impl From<InvalidResultCode> for Error {
-    fn from(_: InvalidResultCode) -> Self {
-        Error::InvalidResultCode
-    }
-}
-
 impl Response {
+    /// Minimum size of an encoded [`Response`] sent by a server to this client.
+    pub const MIN_SIZE: usize = // parts of a public ip response
+        1 + // version
+        1 + // opcode
+        2 + // result code
+        4 + // epoch time
+        4; // lifetime
+
+    /// Minimum size of an encoded [`Response`] sent by a server to this client.
+    pub const MAX_SIZE: usize = // parts of mapping response
+        1 + // version
+        1 + // opcode
+        2 + // result code
+        4 + // epoch time
+        2 + // private port
+        2 + // public port 
+        4; // lifetime
+
+    /// Indicator ORd into the [`Opcode`] to indicate a response packet.
+    pub const INDICATOR: u8 = 1u8 << 7;
+
     pub fn decode(buf: &[u8]) -> Result<Self, Error> {
-        if buf.len() < MIN_RESP_SIZE || buf.len() > MAX_RESP_SIZE {
+        if buf.len() < Self::MIN_SIZE || buf.len() > Self::MAX_SIZE {
             return Err(Error::Malformed);
         }
-        let _: Version = buf[0].try_into()?;
+        let _: Version = buf[0].try_into().map_err(|_| Error::InvalidVersion)?;
         let opcode = buf[1];
-        if !(opcode & RESPONSE_INDICATOR == RESPONSE_INDICATOR) {
+        if opcode & Self::INDICATOR != Self::INDICATOR {
             return Err(Error::NotAResponse);
         }
-        let opcode: Opcode = (opcode & !RESPONSE_INDICATOR).try_into()?;
+        let opcode: Opcode = (opcode & !Self::INDICATOR)
+            .try_into()
+            .map_err(|_| Error::InvalidOpcode)?;
 
         let result_bytes =
             u16::from_be_bytes(buf[2..4].try_into().expect("slice has the right len"));
-        let result_code = result_bytes.try_into()?;
+        let result_code = result_bytes
+            .try_into()
+            .map_err(|_| Error::InvalidResultCode)?;
 
         match result_code {
             ResultCode::Success => Ok(()),
@@ -203,6 +140,7 @@ impl Response {
 
                 let lifetime_bytes = buf[12..16].try_into().expect("slice has the right len");
                 let lifetime_seconds = u32::from_be_bytes(lifetime_bytes);
+
                 Response::PortMap {
                     proto,
                     epoch_time,

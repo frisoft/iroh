@@ -62,7 +62,7 @@ impl MapData {
         } = self;
         let mut buf = [0; Self::ENCODED_SIZE];
         buf[0..12].copy_from_slice(nonce);
-        buf[12] = *protocol as u8;
+        buf[12] = (*protocol).into();
         // buf[13..16] reserved
         buf[16..18].copy_from_slice(&local_port.to_be_bytes());
         buf[18..20].copy_from_slice(&external_port.to_be_bytes());

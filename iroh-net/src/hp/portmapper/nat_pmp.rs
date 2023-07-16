@@ -2,7 +2,7 @@ use std::{net::Ipv4Addr, num::NonZeroU16, time::Duration};
 
 use tracing::{debug, trace};
 
-use self::protocol::{MapProtocol, Request, Response, MAX_RESP_SIZE};
+use self::protocol::{MapProtocol, Request, Response};
 
 mod protocol;
 
@@ -44,7 +44,7 @@ impl Mapping {
         };
 
         socket.send(&req.encode()).await?;
-        let mut buffer = vec![0; MAX_RESP_SIZE];
+        let mut buffer = vec![0; Response::MAX_SIZE];
         let read = tokio::time::timeout(RECV_TIMEOUT, socket.recv(&mut buffer)).await??;
         let response = Response::decode(&buffer[..read])?;
 
@@ -67,7 +67,7 @@ impl Mapping {
         // now send the second response to get the external address
         let req = Request::ExternalAddress;
         socket.send(&req.encode()).await?;
-        let mut buffer = vec![0; MAX_RESP_SIZE];
+        let mut buffer = vec![0; Response::MAX_SIZE];
         let read = tokio::time::timeout(RECV_TIMEOUT, socket.recv(&mut buffer)).await??;
         let response = Response::decode(&buffer[..read])?;
         let external_addr = match response {
@@ -131,7 +131,7 @@ async fn probe_available_fallible(
     socket.send(&req.encode()).await?;
 
     // wait for the response and decode it
-    let mut buffer = vec![0; MAX_RESP_SIZE];
+    let mut buffer = vec![0; Response::MAX_SIZE];
     let read = tokio::time::timeout(RECV_TIMEOUT, socket.recv(&mut buffer)).await??;
     let response = Response::decode(&buffer[..read])?;
 
