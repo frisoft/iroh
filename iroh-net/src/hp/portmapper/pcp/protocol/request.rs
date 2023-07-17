@@ -14,6 +14,7 @@ const MAPPING_REQUESTED_LIFETIME_SECONDS: u32 = 60 * 60;
 /// See [RFC 6887 Request Header](https://datatracker.ietf.org/doc/html/rfc6887#section-7.1)
 ///
 // NOTE: PCP Options are optional, and currently not used in this code, thus not implemented
+#[derive(Debug, PartialEq, Eq)]
 pub struct Request {
     /// [`Version`] to use in this request.
     pub(super) version: Version,
@@ -29,7 +30,7 @@ pub struct Request {
 
 impl Request {
     /// Size of a [`Request`] sent by this client, in bytes.
-    pub const SIZE: usize = // parts:
+    pub const MIN_SIZE: usize = // parts:
         1 + // version
         1 + // opcode
         2 + // reserved
@@ -44,7 +45,7 @@ impl Request {
             client_addr,
             opcode_data,
         } = self;
-        let mut buf = Vec::with_capacity(Self::SIZE + opcode_data.encoded_size());
+        let mut buf = Vec::with_capacity(Self::MIN_SIZE + opcode_data.encoded_size());
         // buf[0]
         buf.push((*version).into());
         // buf[1]
@@ -98,5 +99,55 @@ impl Request {
                     .to_ipv6_mapped(),
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn random<R: rand::Rng>(opcode: super::Opcode, rng: &mut R) -> Self {
+        let opcode_data = OpcodeData::random(opcode, rng);
+        let addr_octects: [u8; 16] = rng.gen();
+        Request {
+            version: Version::Pcp,
+            lifetime_seconds: rng.gen(),
+            client_addr: Ipv6Addr::from(addr_octects),
+            opcode_data,
+        }
+    }
+
+    #[cfg(test)]
+    #[track_caller]
+    fn decode(buf: &[u8]) -> Self {
+        let version: Version = buf[0].try_into().unwrap();
+        let opcode: super::Opcode = buf[1].try_into().unwrap();
+        // buf[2] reserved
+        // buf[3] reserved
+        let lifetime_bytes: [u8; 4] = buf[4..8].try_into().unwrap();
+        let lifetime_seconds = u32::from_be_bytes(lifetime_bytes);
+
+        let local_ip_bytes: [u8; 16] = buf[8..24].try_into().unwrap();
+        let client_addr: Ipv6Addr = local_ip_bytes.into();
+
+        let opcode_data = OpcodeData::decode(opcode, buf).unwrap();
+        Self {
+            version,
+            lifetime_seconds,
+            client_addr,
+            opcode_data,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_encode_decode_addr_request() {
+        let mut gen = rand_chacha::ChaCha8Rng::seed_from_u64(42);
+
+        let request = Request::random(super::super::Opcode::Announce, &mut gen);
+        let encoded = request.encode();
+        assert_eq!(request, Request::decode(&encoded));
     }
 }

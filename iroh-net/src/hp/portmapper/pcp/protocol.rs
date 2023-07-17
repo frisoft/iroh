@@ -1,4 +1,4 @@
-//! Definitions and utilities to interact with a NAT-PMP/PCP server.
+//! Definitions and utilities to interact with a PCP server.
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 

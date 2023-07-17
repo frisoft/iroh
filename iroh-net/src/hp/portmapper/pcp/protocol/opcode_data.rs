@@ -7,7 +7,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use super::Opcode;
 
 /// Data associated to an [`Opcode`]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum OpcodeData {
     /// Data for an [`Opcode::Announce`] request.
     Announce,
@@ -16,7 +16,7 @@ pub enum OpcodeData {
 }
 
 /// [`OpcodeData`] associated to a [`Opcode::Map`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct MapData {
     /// Nonce of the request. Used to verify responses in the client side, and modifications in the
     /// server side.
@@ -38,8 +38,6 @@ pub struct MapData {
 pub enum MapProtocol {
     Udp = 17,
 }
-
-pub struct InvalidOpcodeData;
 
 impl MapData {
     /// Size of the opcode-specific data of a [`Opcode::Map`] request.
@@ -93,7 +91,14 @@ impl MapData {
             external_address,
         })
     }
+
+    fn random<R: rand::Rng>(rng: &mut R) -> MapData {
+        todo!()
+    }
 }
+
+#[derive(Debug)]
+pub struct InvalidOpcodeData;
 
 impl OpcodeData {
     /// Get the associated [`Opcode`].
@@ -127,6 +132,14 @@ impl OpcodeData {
                 let map_data = MapData::decode(buf)?;
                 Ok(OpcodeData::MapData(map_data))
             }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn random<R: rand::Rng>(opcode: Opcode, rng: &mut R) -> OpcodeData {
+        match opcode {
+            Opcode::Announce => OpcodeData::Announce,
+            Opcode::Map => OpcodeData::MapData(MapData::random(rng)),
         }
     }
 }

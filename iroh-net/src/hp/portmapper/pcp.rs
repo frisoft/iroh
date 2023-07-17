@@ -107,8 +107,8 @@ impl Mapping {
 /// Timeout to receive a response from a PCP server.
 const RECV_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Probes the local gateway for PCP support.
 pub async fn probe_available(local_ip: Ipv4Addr, gateway: Ipv4Addr) -> bool {
-    debug!("starting probe");
     match probe_available_fallible(local_ip, gateway).await {
         Ok(response) => {
             trace!("probe response: {response:?}");

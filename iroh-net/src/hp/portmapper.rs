@@ -236,7 +236,6 @@ impl Probe {
         local_ip: Ipv4Addr,
         gateway: Ipv4Addr,
     ) -> Probe {
-        debug!("starting portmapping probe");
         let ProbeOutput { upnp, pcp, nat_pmp } = output;
         let Config {
             enable_upnp,
