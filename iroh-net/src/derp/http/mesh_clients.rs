@@ -113,10 +113,10 @@ mod tests {
             .ok();
 
         // TODO(ramfox): figure out why this fails on later rounds
-        // for i in 0..10 {
-        // println!("TEST_MESH_NETWORK: round {i}");
-        test_mesh_network_once().await?;
-        // }
+        for i in 0..50 {
+            println!("TEST_MESH_NETWORK: round {i}");
+            test_mesh_network_once().await?;
+        }
         Ok(())
     }
 
