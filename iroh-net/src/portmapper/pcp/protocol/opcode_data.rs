@@ -23,7 +23,7 @@ pub struct MapData {
     pub nonce: [u8; 12],
     /// Protocol for which the mapping is being requested.
     pub protocol: MapProtocol,
-    /// Locol port for the mapping.
+    /// Local port for the mapping.
     pub local_port: u16,
     /// External port of the mapping.
     pub external_port: u16,
@@ -38,6 +38,10 @@ pub struct MapData {
 pub enum MapProtocol {
     Udp = 17,
 }
+
+/// Generic error returned when decoding [`OpcodeData`] fails.
+#[derive(Debug)]
+pub struct InvalidOpcodeData;
 
 impl MapData {
     /// Size of the opcode-specific data of a [`Opcode::Map`] request.
@@ -69,17 +73,24 @@ impl MapData {
         buf
     }
 
+    /// Decode a [`MapData`].
     pub fn decode(buf: &[u8]) -> Result<Self, InvalidOpcodeData> {
         if buf.len() < Self::ENCODED_SIZE {
             return Err(InvalidOpcodeData);
         }
 
         let nonce = buf[..12].try_into().expect("slice has the right size");
+
         let protocol = buf[12].try_into().map_err(|_| InvalidOpcodeData)?;
+
+        // buf[13..16] reserved
+
         let local_port_bytes = buf[16..18].try_into().expect("slice has the right size");
         let local_port = u16::from_be_bytes(local_port_bytes);
-        let external_port_bytes = buf[16..18].try_into().expect("slice has the right size");
+
+        let external_port_bytes = buf[18..20].try_into().expect("slice has the right size");
         let external_port = u16::from_be_bytes(external_port_bytes);
+
         let external_addr_bytes: [u8; 16] = buf[20..].try_into().expect("buffer size was verified");
         let external_address = Ipv6Addr::from(external_addr_bytes);
 
@@ -92,13 +103,18 @@ impl MapData {
         })
     }
 
+    #[cfg(test)]
     fn random<R: rand::Rng>(rng: &mut R) -> MapData {
-        todo!()
+        let octects: [u8; 16] = rng.gen();
+        MapData {
+            nonce: rng.gen(),
+            protocol: MapProtocol::Udp,
+            local_port: rng.gen(),
+            external_port: rng.gen(),
+            external_address: octects.into(),
+        }
     }
 }
-
-#[derive(Debug)]
-pub struct InvalidOpcodeData;
 
 impl OpcodeData {
     /// Get the associated [`Opcode`].
@@ -125,6 +141,7 @@ impl OpcodeData {
         }
     }
 
+    /// Decode the [`OpcodeData`] expected for a given [`Opcode`].
     pub fn decode(opcode: Opcode, buf: &[u8]) -> Result<Self, InvalidOpcodeData> {
         match opcode {
             Opcode::Announce => Ok(OpcodeData::Announce),

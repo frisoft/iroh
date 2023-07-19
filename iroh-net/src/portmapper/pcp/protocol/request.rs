@@ -1,13 +1,11 @@
+//! A PCP request encoding and decoding.
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use super::{
     opcode_data::{MapData, MapProtocol, OpcodeData},
     Version,
 };
-
-/// Tailscale uses the recommended port mapping lifetime for PMP, which is 2 hours. See
-/// <https://datatracker.ietf.org/doc/html/rfc6886#section-3.3>
-const MAPPING_REQUESTED_LIFETIME_SECONDS: u32 = 60 * 60;
 
 /// A PCP Request.
 ///
@@ -56,9 +54,9 @@ impl Request {
         buf.push(0);
         // buf[4..8]
         buf.extend_from_slice(&lifetime_seconds.to_be_bytes());
-        // buf[8..12]
+        // buf[8..24]
         buf.extend_from_slice(&client_addr.octets());
-        // buf[12..]
+        // buf[24..]
         opcode_data.encode_into(&mut buf);
 
         buf
@@ -76,16 +74,18 @@ impl Request {
         }
     }
 
-    pub fn get_mapping(
+    /// Create a mapping request.
+    pub fn mapping(
         nonce: [u8; 12],
         local_port: u16,
         local_ip: Ipv4Addr,
         preferred_external_port: Option<u16>,
         preferred_external_address: Option<Ipv4Addr>,
+        lifetime_seconds: u32,
     ) -> Request {
         Request {
             version: Version::Pcp,
-            lifetime_seconds: MAPPING_REQUESTED_LIFETIME_SECONDS,
+            lifetime_seconds,
             client_addr: local_ip.to_ipv6_mapped(),
             opcode_data: OpcodeData::MapData(MapData {
                 nonce,
@@ -126,7 +126,7 @@ impl Request {
         let local_ip_bytes: [u8; 16] = buf[8..24].try_into().unwrap();
         let client_addr: Ipv6Addr = local_ip_bytes.into();
 
-        let opcode_data = OpcodeData::decode(opcode, buf).unwrap();
+        let opcode_data = OpcodeData::decode(opcode, &buf[24..]).unwrap();
         Self {
             version,
             lifetime_seconds,
@@ -147,6 +147,15 @@ mod tests {
         let mut gen = rand_chacha::ChaCha8Rng::seed_from_u64(42);
 
         let request = Request::random(super::super::Opcode::Announce, &mut gen);
+        let encoded = request.encode();
+        assert_eq!(request, Request::decode(&encoded));
+    }
+
+    #[test]
+    fn test_encode_decode_map_request() {
+        let mut gen = rand_chacha::ChaCha8Rng::seed_from_u64(42);
+
+        let request = Request::random(super::super::Opcode::Map, &mut gen);
         let encoded = request.encode();
         assert_eq!(request, Request::decode(&encoded));
     }
