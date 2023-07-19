@@ -1,3 +1,5 @@
+//! A port mapping created with one of the supported protocols.
+
 use std::{net::Ipv4Addr, num::NonZeroU16, time::Duration};
 
 use anyhow::Result;
@@ -10,16 +12,21 @@ pub(super) trait PortMapped: std::fmt::Debug + Unpin {
     fn half_lifetime(&self) -> Duration;
 }
 
+/// A port mapping created with one of the supported protocols.
 #[derive(derive_more::Debug)]
 pub enum Mapping {
+    /// A UPnP mapping.
     #[debug(transparent)]
     Upnp(upnp::Mapping),
+    /// A PCP mapping.
     #[debug(transparent)]
     Pcp(pcp::Mapping),
     #[debug(transparent)]
     NatPmp(nat_pmp::Mapping),
 }
+
 impl Mapping {
+    /// Create a new PCP mapping.
     pub(crate) async fn new_pcp(
         local_ip: Ipv4Addr,
         local_port: NonZeroU16,
@@ -42,6 +49,7 @@ impl Mapping {
             .map(Self::NatPmp)
     }
 
+    /// Create a new UPnP mapping.
     pub(crate) async fn new_upnp(
         local_ip: Ipv4Addr,
         local_port: NonZeroU16,
@@ -53,13 +61,11 @@ impl Mapping {
             .map(Self::Upnp)
     }
 
+    /// Release the mapping.
     pub(crate) async fn release(self) -> Result<()> {
         match self {
             Mapping::Upnp(m) => m.release().await,
-            Mapping::Pcp(m) => {
-                // TODO(@divma): do
-                anyhow::bail!("unimplemented");
-            }
+            Mapping::Pcp(m) => m.release().await,
             Mapping::NatPmp(m) => {
                 // TODO(@divma): do
                 anyhow::bail!("unimplemented");
