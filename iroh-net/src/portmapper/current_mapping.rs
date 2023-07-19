@@ -1,3 +1,5 @@
+//! Holds the current mapping value and ensures that any change is reported accordingly.
+
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     num::NonZeroU16,
@@ -6,7 +8,7 @@ use std::{
 };
 
 use futures::Future;
-use iroh_metrics::{inc, portmap::Metrics as PortmapMetrics};
+use iroh_metrics::inc;
 use std::time::Duration;
 use tokio::{sync::watch, time};
 use tracing::trace;
@@ -49,7 +51,7 @@ impl<M: Mapping> ActiveMapping<M> {
 /// Events in the lifetime of the mapping.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Event {
-    /// On this event, the mapping is halway through it's lifetime and should be renewed.
+    /// On this event, the mapping is halfway through its lifetime and should be renewed.
     Renew {
         external_ip: Ipv4Addr,
         external_port: NonZeroU16,
@@ -74,7 +76,7 @@ pub(super) struct CurrentMapping<M = super::mapping::Mapping> {
 }
 
 impl<M: Mapping> CurrentMapping<M> {
-    /// Creates a new [`CurrentMapping`] and returns the watcher over it's external address.
+    /// Creates a new [`CurrentMapping`] and returns the watcher over its external address.
     pub(super) fn new() -> (Self, watch::Receiver<Option<SocketAddrV4>>) {
         let (address_tx, address_rx) = watch::channel(None);
         let wrapper = CurrentMapping {
@@ -106,7 +108,7 @@ impl<M: Mapping> CurrentMapping<M> {
             // inform only if this produces a different external address
             let update = old_addr != maybe_external_addr;
             if update {
-                inc!(PortmapMetrics, external_address_updated);
+                inc!(super::Metrics, external_address_updated);
             };
             update
         });
